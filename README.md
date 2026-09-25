@@ -58,7 +58,3 @@ Songs never repeat within a game, and only songs from the chosen playlist are su
 
 To change clip lengths or points, edit `TIERS_MS` and `POINTS` in `src/game/rules.ts`.
 
-emium account. |
-| Login works but nothing plays | Check the account is listed under *User Management*, and use a desktop browser. |
-| "Port 5173 is already in use" | Another copy is running. Close it, or stop it with Ctrl+C in its terminal. |
-| No sound | Check the tab isn't muted, and that Spotify isn't set to play on another device. |
