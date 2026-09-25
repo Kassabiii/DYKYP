@@ -1,4 +1,4 @@
-# Do You Know Your Playlist?
+# DYKYP — Do You Know Your Playlist?
 
 A guess-the-song game played on your own Spotify playlist. You hear **0.1 s** of a song.
 Name it, or skip (a wrong guess also counts as a skip), and the clip gets longer:
@@ -14,7 +14,7 @@ Built with Vue 3, TypeScript, Vite and the Spotify Web Playback SDK. Static site
 
 ## Run it on your computer
 
-1. **Unzip** the folder and open a terminal inside it.
+1. **Unzip** `DYKYP.zip` and open a terminal inside the `DYKYP` folder.
 2. **Create a Spotify app** in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
    - Click *Create app*. Any name and description will do.
    - Redirect URI: `http://127.0.0.1:5173`
