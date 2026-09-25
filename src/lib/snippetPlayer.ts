@@ -104,7 +104,8 @@ export class SnippetPlayer {
       if (this.player === player) this.onPlayingChange(Boolean(state && !state.paused))
     })
     player.addListener('account_error', () => this.onError('Spotify Premium is required to play the clips.'))
-    player.addListener('playback_error', ({ message }) => this.onError(`Playback problem: ${message}`))
+    // 'playback_error' is deliberately not shown: the SDK fires it for harmless refusals
+    // (e.g. "The operation is not allowed" on a pause or seek) while playback carries on.
 
     if (!(await player.connect())) throw new Error('Could not connect to Spotify.')
     this.deviceId = await firstReady
