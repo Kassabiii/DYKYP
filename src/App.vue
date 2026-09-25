@@ -96,8 +96,9 @@ async function backToPlaylists(): Promise<void> {
   view.value = 'playlists'
 }
 
-function logout(): void {
-  void game.stop()
+async function logout(): Promise<void> {
+  // Pause first, while the login is still valid.
+  await game.stop()
   player.disconnect()
   auth.logout()
   profile.value = null
