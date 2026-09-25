@@ -1,25 +1,253 @@
 <script setup lang="ts">
-import Fuse from 'fuse.js'
-import { computed, nextTick, onMounted, ref } from 'vue'
-type Track={id:string;uri:string;name:string;artists:string[];durationMs:number;image?:string}; type Playlist={id:string;name:string;image?:string;total:number;owner:string}; type View='welcome'|'playlists'|'game'|'complete'
-const clientId=import.meta.env.VITE_SPOTIFY_CLIENT_ID as string|undefined, redirectUri=import.meta.env.VITE_SPOTIFY_REDIRECT_URI||window.location.origin
-const scopes=['playlist-read-private','playlist-read-collaborative','streaming','user-read-private','user-modify-playback-state','user-read-playback-state'], tiers=[100,1000,2000,4000,8000], points=[100,80,60,40,20]
-const accessToken=ref(sessionStorage.getItem('spotify_access_token')||''), view=ref<View>(accessToken.value?'playlists':'welcome'), loading=ref(false), error=ref(''), playlists=ref<Playlist[]>([]), selectedPlaylist=ref<Playlist|null>(null), tracks=ref<Track[]>([]), current=ref<Track|null>(null), tier=ref(0), score=ref(0), round=ref(1), maxRounds=ref(5), guess=ref(''), revealed=ref(false), history=ref<{track:Track;correct:boolean;points:number}[]>([])
-let player:Spotify.Player|undefined,deviceId='',pauseTimer:number|undefined,roundStartMs=0,playRequest=0,armedRequest=0,fullTrackPlayback=false
-const matches=computed(()=>!guess.value.trim()?[]:new Fuse(tracks.value,{keys:['name','artists'],threshold:.35}).search(guess.value).slice(0,6).map(x=>x.item)), tierLabel=computed(()=>tiers[tier.value]<1000?'0.1 sec':`${tiers[tier.value]/1000} sec`)
-function b64(bytes:Uint8Array){return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
-async function login(){if(!clientId){error.value='Add VITE_SPOTIFY_CLIENT_ID to .env.local before connecting Spotify.';return}const verifier=b64(crypto.getRandomValues(new Uint8Array(64))),digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier));sessionStorage.setItem('spotify_pkce_verifier',verifier);const p=new URLSearchParams({client_id:clientId,response_type:'code',redirect_uri:redirectUri,code_challenge_method:'S256',code_challenge:b64(new Uint8Array(digest)),scope:scopes.join(' ')});window.location.assign(`https://accounts.spotify.com/authorize?${p}`)}
-async function api<T>(path:string,options:RequestInit={}):Promise<T>{const r=await fetch(`https://api.spotify.com/v1${path}`,{...options,headers:{Authorization:`Bearer ${accessToken.value}`,'Content-Type':'application/json',...(options.headers||{})}});if(!r.ok)throw new Error(r.status===403?'Spotify Premium is required for audio playback.':`Spotify request failed (${r.status}).`);return r.status===204?undefined as T:r.json()}
-async function exchange(code:string){const verifier=sessionStorage.getItem('spotify_pkce_verifier');if(!verifier||!clientId)throw new Error('Your login session expired. Please connect Spotify again.');const body=new URLSearchParams({client_id:clientId,grant_type:'authorization_code',code,redirect_uri:redirectUri,code_verifier:verifier}),r=await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!r.ok)throw new Error('Spotify could not finish login. Check your app redirect URI.');const data=await r.json() as {access_token:string};accessToken.value=data.access_token;sessionStorage.setItem('spotify_access_token',data.access_token);window.history.replaceState({},'',redirectUri);view.value='playlists';await loadPlaylists()}
-async function loadPlaylists(){loading.value=true;error.value='';try{const d=await api<{items:any[]}>('/me/playlists?limit=50');playlists.value=d.items.map(p=>({id:p.id,name:p.name,image:p.images?.[0]?.url,total:p.tracks?.total??p.items?.total??0,owner:p.owner?.display_name??'Spotify'}))}catch(e){error.value=e instanceof Error?e.message:'Could not load playlists.'}finally{loading.value=false}}
-async function choose(p:Playlist){loading.value=true;error.value='';try{const d=await api<{items:any[]}>(`/playlists/${p.id}/items?limit=100`);tracks.value=d.items.map(x=>x.item).filter(t=>t?.type==='track'&&!t.is_local&&t.uri).map(t=>({id:t.id,uri:t.uri,name:t.name,artists:t.artists.map((a:any)=>a.name),durationMs:t.duration_ms,image:t.album?.images?.[1]?.url||t.album?.images?.[0]?.url}));if(tracks.value.length<5)throw new Error('Choose a playlist with at least 5 playable songs. Local files and podcasts are excluded.');selectedPlaylist.value=p;score.value=0;round.value=1;history.value=[];view.value='game';await setupPlayer();next()}catch(e){error.value=e instanceof Error?e.message:'Could not start this playlist.'}finally{loading.value=false}}
-async function setupPlayer(){if(player)return;await new Promise<void>((resolve,reject)=>{const ready=()=>{player=new window.Spotify.Player({name:'Do You Know Your Playlist',getOAuthToken:cb=>cb(accessToken.value),volume:.5});player.addListener('ready',({device_id})=>{deviceId=device_id;resolve()});player.addListener('account_error',()=>reject(new Error('Spotify Premium is required to play this game.')));player.addListener('player_state_changed',(state:any)=>{if(!fullTrackPlayback&&!state?.paused&&state.track_window?.current_track?.uri===current.value?.uri)armPause(playRequest)});player!.connect()};window.onSpotifyWebPlaybackSDKReady=ready;if(window.Spotify){ready();return}const s=document.createElement('script');s.src='https://sdk.scdn.co/spotify-player.js';s.onerror=()=>reject(new Error('Could not load Spotify Player.'));document.head.appendChild(s)})}
-function next(){current.value=tracks.value[Math.floor(Math.random()*tracks.value.length)];roundStartMs=0;tier.value=0;guess.value='';revealed.value=false;window.setTimeout(play,150)}
-function armPause(request:number){if(request!==playRequest||armedRequest===request)return;armedRequest=request;window.clearTimeout(pauseTimer);pauseTimer=window.setTimeout(()=>void stop(),tiers[tier.value])}
-async function stop(){fullTrackPlayback=false;playRequest++;if(!deviceId)return;const sdkPause=player?.pause().catch(()=>{});try{await api(`/me/player/pause?device_id=${deviceId}`,{method:'PUT'})}catch{}await sdkPause}
-async function play(){if(!current.value||!deviceId)return;window.clearTimeout(pauseTimer);try{await stop();const request=++playRequest;armedRequest=0;await api('/me/player',{method:'PUT',body:JSON.stringify({device_ids:[deviceId],play:false})});await api(`/me/player/play?device_id=${deviceId}`,{method:'PUT',body:JSON.stringify({uris:[current.value.uri],position_ms:roundStartMs})});window.setTimeout(()=>armPause(request),1200)}catch(e){error.value=e instanceof Error?e.message:'Playback failed.'}}
-async function playFullTrack(){if(!current.value||!deviceId)return;window.clearTimeout(pauseTimer);await stop();fullTrackPlayback=true;try{await api('/me/player',{method:'PUT',body:JSON.stringify({device_ids:[deviceId],play:false})});await api(`/me/player/play?device_id=${deviceId}`,{method:'PUT',body:JSON.stringify({uris:[current.value.uri],position_ms:0})})}catch(e){fullTrackPlayback=false;error.value=e instanceof Error?e.message:'Could not play the full track.'}}
-function submit(track=matches.value[0]){if(!current.value||!track)return;const correct=track.id===current.value.id||track.name.trim().toLowerCase()===current.value.name.trim().toLowerCase();correct?finish(true):advance()};function advance(){tier.value===4?finish(false):(tier.value++,guess.value='',play())};function finish(correct:boolean){window.clearTimeout(pauseTimer);void stop();const earned=correct?points[tier.value]:0;score.value+=earned;history.value.push({track:current.value!,correct,points:earned});revealed.value=true;if(correct)void nextTick(()=>{const card=document.querySelector('.answer > div');if(!card||card.querySelector('.track-play'))return;const button=document.createElement('button');button.className='track-play';button.textContent='▶ Play full song';button.addEventListener('click',()=>void playFullTrack());card.insertBefore(button,card.querySelector('.primary'))})};function continueRound(){if(round.value>=maxRounds.value){void stop();view.value='complete'}else{round.value++;next()}};function restart(){view.value='playlists';selectedPlaylist.value=null};function logout(){void stop();sessionStorage.removeItem('spotify_access_token');accessToken.value='';view.value='welcome';playlists.value=[]}
-onMounted(async()=>{const code=new URLSearchParams(window.location.search).get('code');if(code){loading.value=true;try{await exchange(code)}catch(e){error.value=e instanceof Error?e.message:'Login failed.';view.value='welcome'}finally{loading.value=false}}else if(accessToken.value)await loadPlaylists()})
+// Screen flow: welcome → playlists → game → results.
+// Login, API calls, playback and game rules live in src/lib and src/game.
+
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import * as auth from './lib/auth'
+import { SnippetPlayer } from './lib/snippetPlayer'
+import { getPlaylistTracks, getPlaylists, getProfile } from './lib/spotifyApi'
+import type { Playlist, Profile, Track } from './lib/spotifyApi'
+import { MIN_TRACKS, ROUND_OPTIONS } from './game/rules'
+import { useGame } from './game/useGame'
+import GameView from './views/GameView.vue'
+import PlaylistView from './views/PlaylistView.vue'
+import ResultsView from './views/ResultsView.vue'
+import WelcomeView from './views/WelcomeView.vue'
+
+type View = 'welcome' | 'playlists' | 'game' | 'results'
+
+const player = new SnippetPlayer()
+const game = reactive(useGame(player))
+
+const view = ref<View>(auth.hasSession() ? 'playlists' : 'welcome')
+const error = ref('')
+const busy = ref(false)
+const profile = ref<Profile | null>(null)
+const playlists = ref<Playlist[]>([])
+const loadingPlaylists = ref(false)
+const openingId = ref<string | null>(null)
+const selected = ref<Playlist | null>(null)
+const rounds = ref<number>(ROUND_OPTIONS[0])
+
+let selectedTracks: Track[] = []
+
+player.onError = (message) => {
+  error.value = message
+}
+
+function show(e: unknown, fallback: string): void {
+  error.value = e instanceof Error ? e.message : fallback
+}
+
+async function connect(): Promise<void> {
+  error.value = ''
+  busy.value = true
+  try {
+    await auth.startLogin()
+  } catch (e) {
+    show(e, 'Could not open Spotify login.')
+    busy.value = false
+  }
+}
+
+async function loadLibrary(): Promise<void> {
+  loadingPlaylists.value = true
+  try {
+    const [me, lists] = await Promise.all([getProfile(), getPlaylists()])
+    profile.value = me
+    playlists.value = lists
+  } catch (e) {
+    show(e, 'Could not load your playlists.')
+  } finally {
+    loadingPlaylists.value = false
+  }
+}
+
+async function choose(playlist: Playlist): Promise<void> {
+  error.value = ''
+  openingId.value = playlist.id
+  try {
+    const tracks = await getPlaylistTracks(playlist.id)
+    if (tracks.length < MIN_TRACKS) {
+      throw new Error(`“${playlist.name}” has ${tracks.length} playable songs. Pick one with at least ${MIN_TRACKS}.`)
+    }
+    // Connecting the player needs Premium; this is where a free account is stopped.
+    await player.connect()
+
+    selected.value = playlist
+    selectedTracks = tracks
+    game.start(tracks, rounds.value)
+    view.value = 'game'
+  } catch (e) {
+    show(e, 'Could not open this playlist.')
+  } finally {
+    openingId.value = null
+  }
+}
+
+function playAgain(): void {
+  game.start(selectedTracks, rounds.value)
+  view.value = 'game'
+}
+
+async function backToPlaylists(): Promise<void> {
+  await game.stop()
+  error.value = ''
+  view.value = 'playlists'
+}
+
+function logout(): void {
+  void game.stop()
+  player.disconnect()
+  auth.logout()
+  profile.value = null
+  playlists.value = []
+  view.value = 'welcome'
+}
+
+onMounted(async () => {
+  try {
+    if (await auth.completeLoginFromUrl()) view.value = 'playlists'
+  } catch (e) {
+    show(e, 'Login failed.')
+    view.value = 'welcome'
+    return
+  }
+  if (view.value === 'playlists') await loadLibrary()
+})
+
+onBeforeUnmount(() => player.disconnect())
 </script>
-<template><main class="shell"><header><a class="brand" href="/">do you know<br><em>your playlist?</em></a><button v-if="accessToken" class="text-button" @click="logout">Log out</button></header><p v-if="error" class="notice">{{ error }}</p><section v-if="view==='welcome'" class="welcome"><p class="eyebrow">A game for people with suspiciously specific taste</p><h1>Your music.<br>Your memory.</h1><p class="lede">Hear a tiny clip from one of your Spotify playlists. Name it before the clock gives you away.</p><button class="spotify-button" :disabled="loading" @click="login">{{loading?'Connecting…':'Connect with Spotify'}}</button><small>Spotify Premium is required for playback.</small></section><section v-else-if="view==='playlists'" class="playlist-page"><p class="eyebrow">Pick your battlefield</p><h1>Choose a playlist</h1><p class="lede">We’ll only use songs from this list — no outside knowledge needed.</p><div v-if="loading" class="loading">Loading your library…</div><div v-else class="playlists"><button v-for="p in playlists" :key="p.id" class="playlist-card" @click="choose(p)"><img v-if="p.image" :src="p.image" alt=""><span v-else class="cover">♫</span><span><b>{{p.name}}</b><small>{{p.total}} songs · {{p.owner}}</small></span><i>→</i></button></div></section><section v-else-if="view==='game'&&current" class="game"><div class="game-top"><span>{{selectedPlaylist?.name}}</span><b>Round {{round}} / {{maxRounds}}</b><span>{{score}} pts</span></div><div class="sound"><div class="wave"><i v-for="n in 18" :key="n" :style="{height:`${16+(n%5)*10}px`}"></i></div><p>Every clip starts at <strong>0:00</strong> — current tier: <strong>{{tierLabel}}</strong></p><button class="listen" @click="play">▶ Play {{tierLabel}} clip</button></div><div v-if="!revealed" class="guess-box"><label for="guess">What song is this?</label><input id="guess" v-model="guess" autocomplete="off" placeholder="Start typing a title…" @keydown.enter.prevent="submit()"><div v-if="matches.length" class="matches"><button v-for="track in matches" :key="track.id" @click="submit(track)"><b>{{track.name}}</b><span>{{track.artists.join(', ')}}</span></button></div><div class="actions"><button class="secondary" @click="advance">{{tier===4?'Reveal answer':`Skip → ${tiers[tier+1]===1000?'1':tiers[tier+1]/1000}s`}}</button><button class="primary" :disabled="!guess" @click="submit()">Submit guess</button></div></div><div v-else class="answer"><img v-if="current.image" :src="current.image" alt=""><div><p class="eyebrow">{{history.at(-1)?.correct?`Correct · +${history.at(-1)?.points} points`:'The answer was'}}</p><h2>{{current.name}}</h2><p>{{current.artists.join(', ')}}</p><button class="primary" @click="continueRound">{{round===maxRounds?'See results':'Next song'}} →</button></div></div><div class="tier-bar" aria-label="Snippet tiers"><div v-for="(duration,index) in tiers" :key="duration" :class="{active:index===tier,done:index<tier}"><span>{{duration===100?'0.1':duration/100}}s</span><i></i></div></div></section><section v-else-if="view==='complete'" class="complete"><p class="eyebrow">Session complete</p><h1>{{score}} points</h1><p class="lede">You got {{history.filter(x=>x.correct).length}} of {{history.length}} songs.</p><div class="results"><div v-for="item in history" :key="item.track.id"><span>{{item.correct?'✓':'—'}}</span><b>{{item.track.name}}</b><small>{{item.track.artists.join(', ')}}</small><em>+{{item.points}}</em></div></div><button class="primary" @click="restart">Choose another playlist</button></section></main></template>
+
+<template>
+  <div class="shell">
+    <header class="topbar">
+      <button
+        v-if="view === 'game' || view === 'results'"
+        type="button"
+        class="brand"
+        aria-label="Back to playlists"
+        @click="backToPlaylists"
+      >
+        ← Playlists
+      </button>
+      <span v-else-if="view !== 'welcome'" class="brand">Do you know your playlist?</span>
+      <span v-else />
+
+      <div v-if="view !== 'welcome'" class="account">
+        <span v-if="profile" class="muted">{{ profile.name }}</span>
+        <button type="button" class="link" @click="logout">Log out</button>
+      </div>
+    </header>
+
+    <Transition name="fade">
+      <p v-if="error" class="notice" role="alert">
+        {{ error }}
+        <button type="button" class="link" aria-label="Dismiss" @click="error = ''">✕</button>
+      </p>
+    </Transition>
+
+    <p v-if="profile?.product && profile.product !== 'premium' && view === 'playlists'" class="notice">
+      This account is on Spotify {{ profile.product }}. You can browse playlists, but the clips need Premium.
+    </p>
+
+    <main>
+      <Transition name="view" mode="out-in">
+        <WelcomeView v-if="view === 'welcome'" :busy="busy" @connect="connect" />
+
+        <PlaylistView
+          v-else-if="view === 'playlists'"
+          v-model:rounds="rounds"
+          :playlists="playlists"
+          :loading="loadingPlaylists"
+          :opening-id="openingId"
+          @choose="choose"
+        />
+
+        <GameView
+          v-else-if="view === 'game'"
+          :game="game"
+          :playlist-name="selected?.name ?? ''"
+          @finish="view = 'results'"
+        />
+
+        <ResultsView
+          v-else
+          :score="game.score"
+          :history="game.history"
+          :playlist-name="selected?.name ?? ''"
+          @again="playAgain"
+          @change="backToPlaylists"
+        />
+      </Transition>
+    </main>
+  </div>
+</template>
+
+<style scoped>
+.shell {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  width: min(960px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.brand {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: 500 13px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+button.brand {
+  cursor: pointer;
+  color: var(--muted);
+  transition: color var(--ease);
+}
+
+button.brand:hover {
+  color: var(--fg);
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 24px;
+}
+
+@media (max-width: 520px) {
+  .shell {
+    padding: 16px 16px 48px;
+  }
+
+  .topbar {
+    padding-bottom: 28px;
+  }
+
+  .account .muted {
+    display: none;
+  }
+}
+</style>
