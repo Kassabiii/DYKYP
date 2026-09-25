@@ -58,20 +58,7 @@ Songs never repeat within a game, and only songs from the chosen playlist are su
 
 To change clip lengths or points, edit `TIERS_MS` and `POINTS` in `src/game/rules.ts`.
 
-## Put it online (Netlify)
-
-`netlify.toml` already holds the build settings.
-
-1. Push this folder to a GitHub repo and import it in Netlify.
-2. In **Site configuration → Environment variables**, add `VITE_SPOTIFY_CLIENT_ID`.
-3. Deploy, then add the site URL (e.g. `https://your-site.netlify.app`) as a Redirect URI in the Spotify dashboard.
-
-## Troubleshooting
-
-| Problem | Fix |
-| --- | --- |
-| "INVALID_CLIENT: Invalid redirect URI" | The address in the browser must match a Redirect URI in the dashboard exactly. |
-| "Spotify Premium is required" | Log in with a Premium account. |
+emium account. |
 | Login works but nothing plays | Check the account is listed under *User Management*, and use a desktop browser. |
 | "Port 5173 is already in use" | Another copy is running. Close it, or stop it with Ctrl+C in its terminal. |
 | No sound | Check the tab isn't muted, and that Spotify isn't set to play on another device. |
