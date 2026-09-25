@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { TIERS_MS, formatSeconds } from '../game/rules'
 
-defineProps<{ busy: boolean }>()
-const emit = defineEmits<{ connect: [] }>()
+defineProps<{
+  busy: boolean
+  loggedIn: boolean
+  /** Spotify display name, once loaded. */
+  name?: string
+}>()
+const emit = defineEmits<{ connect: []; play: [] }>()
 
 // The Web Playback SDK does not run in mobile browsers.
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
@@ -24,10 +29,31 @@ const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
     </ol>
 
     <div class="cta">
-      <button type="button" class="button primary large" :disabled="busy" @click="emit('connect')">
-        {{ busy ? 'Connecting…' : 'Connect Spotify' }}
-      </button>
-      <p class="muted small">
+      <Transition name="swap" mode="out-in">
+        <button
+          v-if="loggedIn"
+          key="play"
+          type="button"
+          class="button primary large"
+          @click="emit('play')"
+        >
+          Play now →
+        </button>
+        <button
+          v-else
+          key="connect"
+          type="button"
+          class="button primary large"
+          :disabled="busy"
+          @click="emit('connect')"
+        >
+          {{ busy ? 'Connecting…' : 'Connect Spotify' }}
+        </button>
+      </Transition>
+      <p v-if="loggedIn" class="muted small">
+        Connected{{ name ? ` as ${name}` : '' }}. Ready when you are.
+      </p>
+      <p v-else class="muted small">
         Needs Spotify Premium and a desktop browser (Chrome, Edge or Firefox).
         <template v-if="isMobile"><br /><strong>Phones can’t play the clips.</strong></template>
       </p>
@@ -106,6 +132,19 @@ h1 {
   margin: 0;
   font-size: 14px;
   line-height: 1.5;
+}
+
+.swap-enter-active,
+.swap-leave-active {
+  transition:
+    opacity var(--ease),
+    transform var(--ease);
+}
+
+.swap-enter-from,
+.swap-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 @keyframes grow {

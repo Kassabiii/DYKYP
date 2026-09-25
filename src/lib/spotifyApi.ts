@@ -27,8 +27,6 @@ export interface Track {
 
 export interface Profile {
   name: string
-  /** "premium", "free", or undefined when Spotify does not share it. */
-  product?: string
 }
 
 export class SpotifyError extends Error {
@@ -94,8 +92,8 @@ async function collectPages<Raw, Out>(firstPath: string, map: (raw: Raw) => Out 
 }
 
 export async function getProfile(): Promise<Profile> {
-  const me = await spotifyFetch<{ display_name?: string; id: string; product?: string }>('/me')
-  return { name: me.display_name || me.id, product: me.product }
+  const me = await spotifyFetch<{ display_name?: string; id: string }>('/me')
+  return { name: me.display_name || me.id }
 }
 
 // Raw Spotify JSON is loosely typed below; only the fields we read are mapped.

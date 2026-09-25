@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // Screen flow: welcome → playlists → game → results.
+// After connecting Spotify the player lands back on the welcome screen and presses "Play now".
 // Login, API calls, playback and game rules live in src/lib and src/game.
 
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
@@ -19,7 +20,8 @@ type View = 'welcome' | 'playlists' | 'game' | 'results'
 const player = new SnippetPlayer()
 const game = reactive(useGame(player))
 
-const view = ref<View>(auth.hasSession() ? 'playlists' : 'welcome')
+const view = ref<View>('welcome')
+const loggedIn = ref(auth.hasSession())
 const error = ref('')
 const busy = ref(false)
 const profile = ref<Profile | null>(null)
@@ -106,6 +108,7 @@ async function logout(): Promise<void> {
   await game.stop()
   player.disconnect()
   auth.logout()
+  loggedIn.value = false
   profile.value = null
   playlists.value = []
   view.value = 'welcome'
@@ -113,13 +116,13 @@ async function logout(): Promise<void> {
 
 onMounted(async () => {
   try {
-    if (await auth.completeLoginFromUrl()) view.value = 'playlists'
+    if (await auth.completeLoginFromUrl()) loggedIn.value = true
   } catch (e) {
     show(e, 'Login failed.')
-    view.value = 'welcome'
     return
   }
-  if (view.value === 'playlists') await loadLibrary()
+  // Fetch the playlists in the background so they are ready when "Play now" is pressed.
+  if (loggedIn.value) await loadLibrary()
 })
 
 onBeforeUnmount(() => player.disconnect())
@@ -140,7 +143,7 @@ onBeforeUnmount(() => player.disconnect())
       <span v-else-if="view !== 'welcome'" class="brand">Do you know your playlist?</span>
       <span v-else />
 
-      <div v-if="view !== 'welcome'" class="account">
+      <div v-if="loggedIn" class="account">
         <span v-if="profile" class="muted">{{ profile.name }}</span>
         <button type="button" class="link" @click="logout">Log out</button>
       </div>
@@ -153,13 +156,16 @@ onBeforeUnmount(() => player.disconnect())
       </p>
     </Transition>
 
-    <p v-if="profile?.product && profile.product !== 'premium' && view === 'playlists'" class="notice">
-      This account is on Spotify {{ profile.product }}. You can browse playlists, but the clips need Premium.
-    </p>
-
     <main>
       <Transition name="view" mode="out-in">
-        <WelcomeView v-if="view === 'welcome'" :busy="busy" @connect="connect" />
+        <WelcomeView
+          v-if="view === 'welcome'"
+          :busy="busy"
+          :logged-in="loggedIn"
+          :name="profile?.name"
+          @connect="connect"
+          @play="view = 'playlists'"
+        />
 
         <PlaylistView
           v-else-if="view === 'playlists'"
