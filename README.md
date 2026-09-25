@@ -6,6 +6,45 @@ Name it, or skip (a wrong guess also counts as a skip), and the clip gets longer
 
 Built with Vue 3, TypeScript, Vite and the Spotify Web Playback SDK. Static site, no backend.
 
+## What you need
+
+- A **Spotify Premium** account (Spotify only lets Premium accounts play music in the browser).
+- A **desktop browser**: Chrome, Edge or Firefox. Phone browsers can't run the Spotify player.
+- **Node.js 20 or newer** to run it on your computer ([nodejs.org](https://nodejs.org)).
+
+## Run it on your computer
+
+1. **Unzip** the folder and open a terminal inside it.
+2. **Create a Spotify app** in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
+   - Click *Create app*. Any name and description will do.
+   - Redirect URI: `http://127.0.0.1:5173`
+   - Tick **Web API** and **Web Playback SDK**, then save.
+   - Copy the **Client ID** from the app's settings.
+   - Under **User Management**, add the Spotify account(s) that will play.
+3. **Add your Client ID.** Copy `.env.example` to a new file named `.env.local`
+   and paste the Client ID after `VITE_SPOTIFY_CLIENT_ID=`.
+   You never need the Client secret; don't put it in this app.
+4. **Install and start:**
+   ```
+   npm install
+   npm run dev
+   ```
+5. Open **<http://127.0.0.1:5173>**. Use this exact address: Spotify rejects `localhost`.
+
+## How to play
+
+1. **Connect Spotify** and allow access.
+2. **Pick how many songs** (5, 10 or 20) and **choose one of your playlists**.
+3. Press **▶** (or **Space**) to hear the first **0.1 s** of a random song from it.
+4. **Type** a title or artist and pick the song from the list (**↑ ↓** then **Enter**).
+   - Right: you score points. The shorter the clip, the more: 100, 80, 60, 40, 20, 10.
+   - Wrong, or **Skip**: the next, longer clip plays straight away.
+   - After the 8 s clip, the answer is revealed.
+5. After each round you can **play, pause and resume the full song**, then go to the next one.
+6. At the end you see your score and every answer. **Play again** or pick another playlist.
+
+Songs never repeat within a game, and only songs from the chosen playlist are suggested.
+
 ## How it is organised
 
 | File | What it does |
@@ -19,25 +58,20 @@ Built with Vue 3, TypeScript, Vite and the Spotify Web Playback SDK. Static site
 
 To change clip lengths or points, edit `TIERS_MS` and `POINTS` in `src/game/rules.ts`.
 
-## Run locally
-
-1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-   Tick **Web API** and **Web Playback SDK**, and add `http://127.0.0.1:5173` as a Redirect URI.
-2. Copy `.env.example` to `.env.local` and set `VITE_SPOTIFY_CLIENT_ID`.
-   Never put the client secret in this app; PKCE does not need it.
-3. `npm install`, then `npm run dev`, and open <http://127.0.0.1:5173> (not `localhost`, Spotify rejects it).
-
-## Deploy on Netlify
+## Put it online (Netlify)
 
 `netlify.toml` already holds the build settings.
 
-1. Push this repo to GitHub and import it in Netlify.
+1. Push this folder to a GitHub repo and import it in Netlify.
 2. In **Site configuration → Environment variables**, add `VITE_SPOTIFY_CLIENT_ID`.
 3. Deploy, then add the site URL (e.g. `https://your-site.netlify.app`) as a Redirect URI in the Spotify dashboard.
 
-## Limits to know about
+## Troubleshooting
 
-- **Spotify Premium** is required to play the clips (a Web Playback SDK rule).
-- **Desktop browsers only.** The Web Playback SDK does not run on mobile browsers.
-- While the Spotify app is in **development mode**, only accounts added under
-  *User Management* in the dashboard can log in.
+| Problem | Fix |
+| --- | --- |
+| "INVALID_CLIENT: Invalid redirect URI" | The address in the browser must match a Redirect URI in the dashboard exactly. |
+| "Spotify Premium is required" | Log in with a Premium account. |
+| Login works but nothing plays | Check the account is listed under *User Management*, and use a desktop browser. |
+| "Port 5173 is already in use" | Another copy is running. Close it, or stop it with Ctrl+C in its terminal. |
+| No sound | Check the tab isn't muted, and that Spotify isn't set to play on another device. |
