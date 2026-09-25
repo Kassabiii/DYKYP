@@ -1,10 +1,12 @@
-// Plays short clips of a track through the Spotify Web Playback SDK.
+// Plays short clips of a track through the Spotify Web Playback SDK (the player in this tab).
 //
-// Why it works this way: starting a song through the Web API takes a few hundred
-// milliseconds and the delay varies, which would ruin a 0.1 second clip. So each
-// round "loads" the song once (muted, via the Web API) and leaves it paused at 0:00.
-// Every clip after that uses the SDK's local resume/pause, which is much faster and
-// more consistent.
+// How a round works:
+//   1. load:  start the song muted, pause it for sure, rewind to 0:00, unmute.
+//   2. clip:  resume → wait N ms → pause for sure → rewind. Local SDK calls, so timing is tight.
+//   3. song:  after the round, play / pause / resume the whole song.
+//
+// The one rule that keeps it safe: the volume only goes back up once the SDK itself reports
+// "paused". A pause is re-sent until it sticks, so music can never run on unnoticed.
 
 import { getAccessToken } from './auth'
 import { SpotifyError, spotifyFetch } from './spotifyApi'
@@ -14,6 +16,8 @@ const PLAYER_NAME = 'Do You Know Your Playlist'
 const VOLUME = 0.6
 const CONNECT_TIMEOUT_MS = 15_000
 const LOAD_TIMEOUT_MS = 8_000
+const PAUSE_ATTEMPTS = 8
+const PAUSE_CHECK_MS = 120
 
 const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
@@ -30,43 +34,37 @@ function loadSdk(): Promise<void> {
   })
 }
 
+/** True if the SDK state shows this track (also when Spotify swapped in a regional copy). */
 function isTrack(state: Spotify.PlaybackState | null, uri: string): boolean {
   const current = state?.track_window.current_track
   if (!current) return false
-  // Spotify can swap in a regional copy of a song ("relinking"), which has a different URI.
   const id = uri.split(':').pop()
   return current.uri === uri || current.linked_from?.uri === uri || current.id === id || current.linked_from?.id === id
 }
 
-interface AccountPlayback {
-  is_playing: boolean
-  device?: { id: string | null }
-}
-
 export class SnippetPlayer {
-  /** Called for errors that happen outside a direct call, e.g. the account is not Premium. */
+  /** Errors that happen outside a direct call, e.g. the account is not Premium. */
   onError: (message: string) => void = () => {}
+  /** Fires whenever this tab's player starts or stops making sound. */
+  onPlayingChange: (playing: boolean) => void = () => {}
 
   private player?: Spotify.Player
   private deviceId = ''
   private loadedUri = ''
-  private stopTimer?: number
-  /** Resolves the clip that is currently playing, so interrupted clips never hang. */
+  /** Bumped by every command; slower, older commands see the change and give up. */
+  private command = 0
+  private clipTimer?: number
   private endClip?: () => void
-  /** Increases with every play/stop so that older, slower calls know they are outdated. */
-  private playId = 0
-  /** The stop in progress, if any; new playback waits for it so a late pause can't cut it off. */
+  /** A stop that is still running; new playback waits for it. */
   private stopping: Promise<void> = Promise.resolve()
 
-  get connected(): boolean {
-    return Boolean(this.deviceId)
-  }
+  // ── Connection ────────────────────────────────────────────────────────────
 
   async connect(): Promise<void> {
     if (this.deviceId) return
+
     // A player that lost its connection is replaced rather than reused.
     this.player?.disconnect()
-    this.player = undefined
     this.loadedUri = ''
     await loadSdk()
 
@@ -81,11 +79,9 @@ export class SnippetPlayer {
     })
     this.player = player
 
-    const ready = new Promise<string>((resolve, reject) => {
+    const firstReady = new Promise<string>((resolve, reject) => {
       player.addListener('ready', ({ device_id }) => resolve(device_id))
-      player.addListener('account_error', () =>
-        reject(new Error('Spotify Premium is required to play the clips.')),
-      )
+      player.addListener('account_error', () => reject(new Error('Spotify Premium is required to play the clips.')))
       player.addListener('authentication_error', () =>
         reject(new Error('Spotify could not verify your login. Please log out and connect again.')),
       )
@@ -95,10 +91,7 @@ export class SnippetPlayer {
       window.setTimeout(() => reject(new Error('The Spotify player took too long to start. Please try again.')), CONNECT_TIMEOUT_MS)
     })
 
-    // After start-up, surface problems to the UI instead of failing silently.
-    player.addListener('account_error', () => this.onError('Spotify Premium is required to play the clips.'))
-    player.addListener('playback_error', ({ message }) => this.onError(`Playback problem: ${message}`))
-    // The SDK reconnects by itself after network hiccups; track the device id either way.
+    // The SDK reconnects by itself after network hiccups; keep the device id in sync.
     player.addListener('ready', ({ device_id }) => {
       if (this.player === player) this.deviceId = device_id
     })
@@ -107,37 +100,29 @@ export class SnippetPlayer {
       this.deviceId = ''
       this.loadedUri = ''
     })
+    player.addListener('player_state_changed', (state) => {
+      if (this.player === player) this.onPlayingChange(Boolean(state && !state.paused))
+    })
+    player.addListener('account_error', () => this.onError('Spotify Premium is required to play the clips.'))
+    player.addListener('playback_error', ({ message }) => this.onError(`Playback problem: ${message}`))
 
-    const connected = await player.connect()
-    if (!connected) throw new Error('Could not connect to Spotify.')
-
-    this.deviceId = await ready
-    await this.transferPlayback()
+    if (!(await player.connect())) throw new Error('Could not connect to Spotify.')
+    this.deviceId = await firstReady
+    await this.makeThisTabActive()
   }
 
-  /**
-   * Never send a play command without our device id: Spotify would then play on whatever
-   * device is active on the account (desktop app, phone), where this app cannot pause it.
-   */
-  private async ensureDevice(): Promise<void> {
-    if (!this.deviceId) await this.connect()
+  disconnect(): void {
+    this.command++
+    this.clearClip()
+    this.player?.disconnect()
+    this.player = undefined
+    this.deviceId = ''
+    this.loadedUri = ''
   }
 
-  /** Asks the Web API what the account is playing, on any device, and pauses it. */
-  private async pauseAccount(): Promise<AccountPlayback | undefined> {
-    try {
-      const playback = await spotifyFetch<AccountPlayback | undefined>('/me/player')
-      if (playback?.is_playing) await spotifyFetch('/me/player/pause', { method: 'PUT' })
-      return playback
-    } catch {
-      // 403 = already paused, 404 = no active device. Neither needs handling.
-      return undefined
-    }
-  }
-
-  /** Makes this browser tab the active Spotify device (the user may be playing on their phone). */
-  private async transferPlayback(): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
+  /** Moves Spotify playback to this tab (the user may have been listening on their phone). */
+  private async makeThisTabActive(): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
       try {
         await spotifyFetch('/me/player', {
           method: 'PUT',
@@ -145,151 +130,176 @@ export class SnippetPlayer {
         })
         return
       } catch (error) {
-        // A freshly created device can take a moment to be known by the Web API.
-        if (!(error instanceof SpotifyError) || error.status !== 404 || attempt >= 3) throw error
+        // A brand-new device can take a moment to be known by the Web API.
+        if (!(error instanceof SpotifyError) || error.status !== 404 || attempt >= 4) throw error
         await wait(700)
       }
     }
   }
 
-  /** Resolves with the first state that matches, or null after the timeout. */
+  // ── Low-level helpers ─────────────────────────────────────────────────────
+
+  /** Resolves with the first SDK state that matches, or null after the timeout. */
   private async waitForState(
     matches: (state: Spotify.PlaybackState | null) => boolean,
     timeoutMs: number,
   ): Promise<Spotify.PlaybackState | null> {
     const player = this.player!
-    const current = await player.getCurrentState()
-    if (matches(current)) return current
+    const now = await player.getCurrentState()
+    if (matches(now)) return now
 
     return new Promise((resolve) => {
       const onChange = (state: Spotify.PlaybackState | null) => {
-        if (!matches(state)) return
-        cleanup()
-        resolve(state)
+        if (matches(state)) done(state)
       }
-      const timer = window.setTimeout(() => {
-        cleanup()
-        resolve(null)
-      }, timeoutMs)
-      const cleanup = () => {
+      const timer = window.setTimeout(() => done(null), timeoutMs)
+      const done = (state: Spotify.PlaybackState | null) => {
         window.clearTimeout(timer)
         player.removeListener('player_state_changed', onChange as never)
+        resolve(state)
       }
       player.addListener('player_state_changed', onChange)
     })
   }
 
-  /** Starts the track muted, then parks it paused at 0:00 so clips can start instantly. */
-  private async load(uri: string): Promise<void> {
-    await this.ensureDevice()
-    const player = this.player!
-    this.loadedUri = ''
-    await player.setVolume(0)
+  /** Sends pause until the SDK confirms it. Returns false if it never did. */
+  private async pauseForSure(): Promise<boolean> {
+    const player = this.player
+    if (!player) return true
 
-    try {
-      const body = JSON.stringify({ uris: [uri], position_ms: 0 })
-      try {
-        await spotifyFetch(`/me/player/play?device_id=${this.deviceId}`, { method: 'PUT', body })
-      } catch (error) {
-        // The device can drop out of the Web API's view; re-attach it and try once more.
-        if (!(error instanceof SpotifyError) || error.status !== 404) throw error
-        await this.transferPlayback()
-        await spotifyFetch(`/me/player/play?device_id=${this.deviceId}`, { method: 'PUT', body })
-      }
-
-      const started = await this.waitForState((s) => isTrack(s, uri) && !s!.paused, LOAD_TIMEOUT_MS)
-      await player.pause()
-      await player.seek(0)
-
-      // Double-check with Spotify itself that nothing is audible anywhere on the account.
-      const playback = await this.pauseAccount()
-      if (playback?.device?.id && playback.device.id !== this.deviceId) {
-        await this.transferPlayback()
-        throw new Error('Spotify started the song on another device. Press play to try again.')
-      }
-      if (!started) throw new Error('Spotify did not start the song. Press play to try again.')
-
-      this.loadedUri = uri
-    } finally {
-      await this.waitForState((s) => !s || s.paused, 1_000)
-      await player.setVolume(VOLUME)
+    for (let attempt = 0; attempt < PAUSE_ATTEMPTS; attempt++) {
+      await player.pause().catch(() => {})
+      await wait(PAUSE_CHECK_MS)
+      const state = await player.getCurrentState()
+      if (!state || state.paused) return true
     }
+    return false
   }
 
-  /** Prepares a track for the next round without playing anything audible. */
+  /** Last resort: ask the Web API to pause whatever the account is playing. */
+  private async pauseAccount(): Promise<void> {
+    await spotifyFetch('/me/player/pause', { method: 'PUT' }).catch(() => {
+      // 403 means it was already paused.
+    })
+  }
+
+  private clearClip(): void {
+    window.clearTimeout(this.clipTimer)
+    this.endClip?.()
+    this.clipTimer = undefined
+    this.endClip = undefined
+  }
+
+  // ── Loading a song ────────────────────────────────────────────────────────
+
+  /** Starts the song muted, then parks it paused at 0:00 so clips can start instantly. */
+  private async load(uri: string): Promise<void> {
+    // Never send "play" without our device id: Spotify would use another device we can't pause.
+    if (!this.deviceId) await this.connect()
+    const player = this.player!
+    this.loadedUri = ''
+
+    await player.setVolume(0)
+
+    const play = () =>
+      spotifyFetch(`/me/player/play?device_id=${this.deviceId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ uris: [uri], position_ms: 0 }),
+      })
+    try {
+      await play()
+    } catch (error) {
+      // The device can drop out of the Web API's view; re-attach it and try once more.
+      if (!(error instanceof SpotifyError) || error.status !== 404) throw error
+      await this.makeThisTabActive()
+      await play()
+    }
+
+    const started = await this.waitForState((s) => isTrack(s, uri) && !s!.paused, LOAD_TIMEOUT_MS)
+    const paused = await this.pauseForSure()
+    await player.seek(0)
+
+    if (!paused) {
+      await this.pauseAccount()
+      throw new Error('Spotify would not pause. Press play to try again.') // volume stays at 0
+    }
+    await player.setVolume(VOLUME)
+    if (!started) throw new Error('Spotify did not start the song. Press play to try again.')
+
+    this.loadedUri = uri
+  }
+
+  // ── Public commands ───────────────────────────────────────────────────────
+
+  /** Loads the next round's song without playing anything audible. */
   async prepare(uri: string): Promise<void> {
-    this.playId++
-    this.clearTimer()
+    this.command++
+    this.clearClip()
+    await this.stopping
     if (this.loadedUri !== uri) await this.load(uri)
   }
 
   /**
-   * Plays the first `durationMs` of the track, then pauses and rewinds to 0:00.
-   * `onStart` fires the moment audio is requested, so the UI can animate in sync.
-   * Resolves when the clip has finished (or was interrupted by another call).
+   * Plays the first `durationMs` of the song, then pauses and rewinds to 0:00.
+   * `onStart` fires when the audio starts, so the UI can animate in sync.
+   * Resolves when the clip ends or is interrupted by another command.
    */
   async playClip(uri: string, durationMs: number, onStart?: () => void): Promise<void> {
-    const id = ++this.playId
-    this.clearTimer()
-
+    const command = ++this.command
+    this.clearClip()
     await this.stopping
     if (this.loadedUri !== uri) await this.load(uri)
-    if (id !== this.playId) return
+    if (command !== this.command) return
 
     const player = this.player!
     await player.activateElement()
     await player.seek(0)
     await player.resume()
-    if (id !== this.playId) return
+    if (command !== this.command) return
     onStart?.()
 
     await new Promise<void>((resolve) => {
       this.endClip = resolve
-      this.stopTimer = window.setTimeout(resolve, durationMs)
+      this.clipTimer = window.setTimeout(resolve, durationMs)
     })
-    if (id !== this.playId) return
-    await this.pauseAndRewind()
+    if (command !== this.command) return
+
+    await this.pauseForSure()
+    await player.seek(0)
   }
 
   /** Plays the whole song from the start (after a round is over). */
-  async playFull(uri: string): Promise<void> {
-    this.playId++
-    this.clearTimer()
+  async playSong(uri: string): Promise<void> {
+    this.command++
+    this.clearClip()
     await this.stopping
     if (this.loadedUri !== uri) await this.load(uri)
     await this.player!.seek(0)
     await this.player!.resume()
   }
 
-  /** Stops everything: this tab's player and, as a safety net, any device on the account. */
+  /** Continues the song from where it was paused. */
+  async resume(): Promise<void> {
+    this.command++
+    await this.player?.resume()
+  }
+
+  /** Pauses without rewinding. */
+  async pause(): Promise<void> {
+    this.command++
+    this.clearClip()
+    if (!(await this.pauseForSure())) await this.pauseAccount()
+  }
+
+  /** Silences everything and rewinds to 0:00. */
   stop(): Promise<void> {
-    this.playId++
-    this.clearTimer()
+    this.command++
+    this.clearClip()
     this.stopping = (async () => {
-      if (this.player && this.deviceId) await this.pauseAndRewind().catch(() => {})
-      await this.pauseAccount()
+      if (!this.player || !this.deviceId) return
+      if (!(await this.pauseForSure())) await this.pauseAccount()
+      await this.player?.seek(0)
     })()
     return this.stopping
-  }
-
-  disconnect(): void {
-    this.playId++
-    this.clearTimer()
-    this.player?.disconnect()
-    this.player = undefined
-    this.deviceId = ''
-    this.loadedUri = ''
-  }
-
-  private clearTimer(): void {
-    window.clearTimeout(this.stopTimer)
-    this.stopTimer = undefined
-    this.endClip?.()
-    this.endClip = undefined
-  }
-
-  private async pauseAndRewind(): Promise<void> {
-    await this.player!.pause()
-    await this.player!.seek(0)
   }
 }

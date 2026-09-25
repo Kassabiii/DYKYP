@@ -36,6 +36,15 @@ export function useGame(player: SnippetPlayer) {
   const error = ref('')
   /** Set while a clip is audible, so the UI can animate its progress. */
   const clip = ref<{ id: number; durationMs: number } | null>(null)
+  /** After a round: whether the full song is playing, and whether it was started at all. */
+  const songPlaying = ref(false)
+  const songStarted = ref(false)
+
+  // The player reports real play/pause changes, so the button is right even if the
+  // user pauses from the Spotify app or a media key.
+  player.onPlayingChange = (playing) => {
+    if (phase.value === 'revealed' && songStarted.value) songPlaying.value = playing
+  }
 
   let deck: Track[] = []
   let clipCounter = 0
@@ -65,6 +74,8 @@ export function useGame(player: SnippetPlayer) {
     attempts.value = []
     error.value = ''
     phase.value = 'loading'
+    songPlaying.value = false
+    songStarted.value = false
 
     try {
       await player.prepare(current.value!.uri)
@@ -140,11 +151,24 @@ export function useGame(player: SnippetPlayer) {
     phase.value = 'revealed'
   }
 
-  async function playFullSong(): Promise<void> {
-    if (!current.value) return
+  /** Play / pause / resume the whole song once the round is over. */
+  async function toggleSong(): Promise<void> {
+    if (!current.value || phase.value !== 'revealed') return
+    error.value = ''
     try {
-      await player.playFull(current.value.uri)
+      if (songPlaying.value) {
+        songPlaying.value = false
+        await player.pause()
+      } else if (songStarted.value) {
+        songPlaying.value = true
+        await player.resume()
+      } else {
+        songStarted.value = true
+        songPlaying.value = true
+        await player.playSong(current.value.uri)
+      }
     } catch (e) {
+      songPlaying.value = false
       error.value = e instanceof Error ? e.message : 'Could not play the song.'
     }
   }
@@ -152,6 +176,7 @@ export function useGame(player: SnippetPlayer) {
   async function stop(): Promise<void> {
     clipCounter++
     clip.value = null
+    songPlaying.value = false
     await player.stop()
   }
 
@@ -167,6 +192,8 @@ export function useGame(player: SnippetPlayer) {
     history,
     error,
     clip,
+    songPlaying,
+    songStarted,
     clipMs,
     lastResult,
     isLastRound,
@@ -175,7 +202,7 @@ export function useGame(player: SnippetPlayer) {
     play,
     guess,
     skip,
-    playFullSong,
+    toggleSong,
     stop,
   }
 }

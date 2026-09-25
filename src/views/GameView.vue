@@ -128,7 +128,18 @@ watch(
           <h2>{{ game.current.name }}</h2>
           <p class="muted">{{ game.current.artists.join(', ') }}</p>
           <div class="answer-actions">
-            <button type="button" class="button ghost" @click="game.playFullSong()">Play the song</button>
+            <button
+              type="button"
+              class="button ghost song-toggle"
+              :aria-pressed="game.songPlaying"
+              @click="game.toggleSong()"
+            >
+              <svg v-if="game.songPlaying" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" />
+              </svg>
+              <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" /></svg>
+              {{ game.songPlaying ? 'Pause' : game.songStarted ? 'Resume' : 'Play the song' }}
+            </button>
             <button v-if="!game.isLastRound" type="button" class="button primary" @click="game.nextRound()">
               Next song →
             </button>
@@ -333,6 +344,16 @@ h2 {
 
 .answer-text .muted {
   margin: 0;
+}
+
+.song-toggle {
+  min-width: 10.5em;
+}
+
+.song-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .answer-actions {

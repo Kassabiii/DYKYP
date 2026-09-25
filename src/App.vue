@@ -85,6 +85,11 @@ async function choose(playlist: Playlist): Promise<void> {
   }
 }
 
+async function showResults(): Promise<void> {
+  await game.stop()
+  view.value = 'results'
+}
+
 function playAgain(): void {
   game.start(selectedTracks, rounds.value)
   view.value = 'game'
@@ -169,7 +174,7 @@ onBeforeUnmount(() => player.disconnect())
           v-else-if="view === 'game'"
           :game="game"
           :playlist-name="selected?.name ?? ''"
-          @finish="view = 'results'"
+          @finish="showResults"
         />
 
         <ResultsView
